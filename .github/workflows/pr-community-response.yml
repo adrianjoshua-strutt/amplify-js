@@ -10,6 +10,7 @@ on:
 jobs:
   handle-community-response:
     runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request || (github.event.comment && github.event.issue.pull_request) }}
     permissions:
       pull-requests: write
     env:
@@ -17,26 +18,42 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       REPOSITORY_NAME: ${{ github.event.repository.full_name }}
     steps:
-      - name: Check if PR targets main branch (for issue comments)
-        if: ${{ github.event.comment }}
-        id: check-branch
+      - name: Check PR details for comments
+        if: ${{ github.event.comment && github.event.issue.pull_request }}
+        id: check-pr
         shell: bash
         run: |
           BASE_BRANCH=$(gh pr view $PR_NUMBER --repo $REPOSITORY_NAME --json baseRefName --jq '.baseRefName')
+          PR_AUTHOR_ASSOCIATION=$(gh api /repos/$REPOSITORY_NAME/issues/$PR_NUMBER --jq '.user.author_association')
           echo "base_branch=$BASE_BRANCH" >> $GITHUB_OUTPUT
+          echo "pr_author_association=$PR_AUTHOR_ASSOCIATION" >> $GITHUB_OUTPUT
           
       - name: Handle community comment response
-        if: ${{ github.event.comment && !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) && steps.check-branch.outputs.base_branch == 'main' }}
+        if: ${{ github.event.comment && github.event.issue.pull_request && !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) && !contains(fromJSON('["MEMBER", "OWNER"]'), steps.check-pr.outputs.pr_author_association) && steps.check-pr.outputs.base_branch == 'main' }}
         shell: bash
         run: |
-          gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME \
-            --add-label "pending-maintainer-review" \
-            --remove-label "pending-community-response"
+          # Check if pending-first-review exists
+          LABELS=$(gh pr view $PR_NUMBER --repo $REPOSITORY_NAME --json labels --jq '.labels[].name')
+          if echo "$LABELS" | grep -q "pending-first-review"; then
+            echo "PR has pending-first-review, not adding pending-maintainer-review"
+            gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME --remove-label "pending-community-response"
+          else
+            gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME \
+              --add-label "pending-maintainer-review" \
+              --remove-label "pending-community-response"
+          fi
       
       - name: Handle community code revision (new commits)
-        if: ${{ github.event.pull_request && !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.user.type) }}
+        if: ${{ github.event.pull_request && !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.author_association) }}
         shell: bash
         run: |
-          gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME \
-            --add-label "pending-maintainer-review" \
-            --remove-label "pending-community-response"
+          # Check if pending-first-review exists
+          LABELS=$(gh pr view $PR_NUMBER --repo $REPOSITORY_NAME --json labels --jq '.labels[].name')
+          if echo "$LABELS" | grep -q "pending-first-review"; then
+            echo "PR has pending-first-review, not adding pending-maintainer-review"
+            gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME --remove-label "pending-community-response"
+          else
+            gh pr edit $PR_NUMBER --repo $REPOSITORY_NAME \
+              --add-label "pending-maintainer-review" \
+              --remove-label "pending-community-response"
+          fi
